@@ -42,11 +42,11 @@ print("\n=== Сравнение стратегий (с учетом фильтр
 print(df.to_string(index=False))
 
 # Сохранение таблицы в CSV и HTML для удобного просмотра
-csv_path = backtest_folder / 'сравнение_стратегий.csv'
-html_path = backtest_folder / 'сравнение_стратегий.html'
-df.to_csv(csv_path, index=False)
-df.to_html(html_path, index=False)
-print(f"\nТаблица сохранена в '{csv_path}' и '{html_path}'.")
+# csv_path = backtest_folder / 'сравнение_стратегий.csv'
+# html_path = backtest_folder / 'сравнение_стратегий.html'
+# df.to_csv(csv_path, index=False)
+# df.to_html(html_path, index=False)
+# print(f"\nТаблица сохранена в '{csv_path}' и '{html_path}'.")
 
 # Построение всех графиков в одном окне (2x2 подграфика)
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -97,6 +97,4 @@ print("""
 3. Фактор прибыли — отношение прибыли к убыткам (>1 хорошо).
 4. Макс. просадка (%) — наибольшее падение капитала (ниже — лучше).
 5. Коэффициент Шарпа — доходность с учётом риска (выше — лучше).
-
-Стратегии с нулевым количеством сделок автоматически удалены из анализа.
 """)

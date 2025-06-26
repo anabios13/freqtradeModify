@@ -76,9 +76,9 @@ base_config = {
 }
 
 strategies = [
-    "Bandtastic", "RsiStrategy", "ScalpingStrategy",
-    "Strategy001", "Strategy002", "Strategy003",
-    "Strategy004", "Strategy005"
+    f.stem
+    for f in Path("user_data/strategies").glob("*.py")
+    if f.is_file() and f.name != "__init__.py"
 ]
 
 output_dir = Path("user_data/dryrun_configs")

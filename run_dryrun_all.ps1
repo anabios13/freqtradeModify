@@ -1,22 +1,29 @@
-$strategies = @(
-    "Bandtastic","RsiStrategy","ScalpingStrategy",
-    "Strategy001","Strategy002","Strategy003",
-    "Strategy004","Strategy005"
-)
+# Папки с конфигами и для PID-файлов
 $cfgDir = "user_data/dryrun_configs"
 $pidDir = "user_data/dryrun_logs"
 
-foreach ($s in $strategies) {
-    Write-Host "Запуск $s..."
-    $cfg = "$cfgDir\config_$s.json"
-    # запускаем freqtrade (он сам пишет в logfile)
+# Убедимся, что папка для PID-файлов существует
+if (-not (Test-Path $pidDir)) {
+    New-Item -Path $pidDir -ItemType Directory | Out-Null
+}
+
+# Находим все файлы config_*.json и запускаем для каждого Freqtrade
+Get-ChildItem -Path $cfgDir -Filter "config_*.json" | ForEach-Object {
+    $cfgFile = $_.FullName
+    # Имя стратегии — это имя файла без префикса 'config_' и суффикса '.json'
+    $strategy = $_.BaseName -replace '^config_', ''
+
+    Write-Host "Запуск стратегии '$strategy'..."
+
     $proc = Start-Process -FilePath "freqtrade" `
-        -ArgumentList "trade --config `"$cfg`"" `
+        -ArgumentList "trade --config `"$cfgFile`"" `
         -WorkingDirectory (Get-Location) `
         -PassThru
 
-    # сохраняем его PID
-    $proc.Id > "$pidDir\$s.pid"
+    # Сохраняем PID в отдельный файл
+    $pidFile = Join-Path $pidDir ("{0}.pid" -f $strategy)
+    $proc.Id | Out-File -FilePath $pidFile -Encoding ascii
+
     Start-Sleep -Seconds 1
 }
 

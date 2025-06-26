@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 from datetime import datetime, timedelta
 import plotly.express as px
+import numpy as np
 
 BACKTEST_FOLDER = Path('user_data/backtest_results')
 DRYRUN_FOLDER  = Path('user_data/dryrun_exports')
@@ -41,30 +42,60 @@ def load_backtest_results():
             })
     return pd.DataFrame(records)
 
+def max_drawdown(returns: pd.Series) -> float:
+    equity = (1 + returns/100).cumprod()
+    peak   = equity.cummax()
+    dd     = (equity/peak - 1) * 100
+    return dd.min()
+
 @st.cache_data(show_spinner=False)
 def load_dryrun_results():
     records = []
-    for file in sorted(DRYRUN_FOLDER.glob('*.json')):
-        parts = file.stem.split('_', 1)
-        if len(parts) != 2:
-            continue
-        strategy_name, ts_str = parts
-        try:
-            test_dt = datetime.strptime(ts_str, '%Y-%m-%d_%H-%M-%S')
-        except ValueError:
-            continue
-        with open(file) as f:
-            data = json.load(f)
-        for t in data:
-            profit_raw = t.get('7', 0)
-            records.append({
-                'timestamp': test_dt,
-                'strategy': strategy_name,
-                'profit_pct': profit_raw * 100,
-                'profit_factor': 0,
-                'max_drawdown_pct': 0,
-                'sharpe': 0
-            })
+    for file in sorted(DRYRUN_FOLDER.glob("*.json")):
+        # 1) Стратегия и время прогона из имени
+        strategy_name, ts_str = file.stem.split("_", 1)
+        run_dt = datetime.strptime(ts_str, "%Y-%m-%d_%H-%M-%S")
+
+        # 2) Грузим JSON как список записей
+        df = pd.read_json(file, orient='records')
+
+        # 3) Если есть open_date — парсим, иначе ставим run_dt
+        if "open_date" in df.columns:
+            df["open_date"] = pd.to_datetime(df["open_date"])
+            # можно взять первую сделку, либо min/max:
+            timestamp = df["open_date"].min()
+        else:
+            timestamp = run_dt
+
+        # 4) Считаем profit_pct по полю realized_profit (или по вашему ключу)
+        if "realized_profit" in df.columns:
+            df["profit_pct"] = df["realized_profit"] * 100
+        elif "profit_ratio" in df.columns:
+            df["profit_pct"] = df["profit_ratio"] * 100
+        else:
+            # fallback на старый ключ "7", если ещё остался
+            df["profit_pct"] = df.get("7", 0) * 100
+
+        # 5) Собираем метрики
+        total_profit  = df["profit_pct"].sum()
+        gross_profit  = df.loc[df["profit_pct"] > 0, "profit_pct"].sum()
+        gross_loss    = df.loc[df["profit_pct"] < 0, "profit_pct"].sum()
+        pf            = gross_profit / abs(gross_loss) if gross_loss != 0 else np.nan
+        max_dd        = max_drawdown(df["profit_pct"])
+        sharpe        = (
+            df["profit_pct"].mean() / df["profit_pct"].std() * np.sqrt(len(df))
+            if df["profit_pct"].std() != 0 else np.nan
+        )
+
+        records.append({
+            "timestamp": timestamp,
+            "strategy": strategy_name,
+            "profit_pct": total_profit,
+            "profit_factor": pf,
+            "max_drawdown_pct": max_dd,
+            "sharpe": sharpe
+        })
+
     return pd.DataFrame(records)
 
 def main():

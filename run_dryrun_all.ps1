@@ -13,10 +13,25 @@ Get-ChildItem -Path $cfgDir -Filter "config_*.json" | ForEach-Object {
     # Имя стратегии — это имя файла без префикса 'config_' и суффикса '.json'
     $strategy = $_.BaseName -replace '^config_', ''
 
-    Write-Host "Запуск стратегии '$strategy'..."
+    Write-Host "Starting '$strategy'..."
 
+    # Формируем общий список аргументов
+    $argsList = @(
+        'trade',
+        '--config',
+        "`"$cfgFile`""
+    )
+
+    # Для AI-стратегий добавляем параметр --freqaimodel
+    if ($strategy -cmatch 'AI') {
+        Write-Host "[i] added --freqaimodel for $strategy"
+     
+        $argsList += @('--freqaimodel', 'LightGBMRegressor')
+    }
+
+    # Запуск процесса
     $proc = Start-Process -FilePath "freqtrade" `
-        -ArgumentList "trade --config `"$cfgFile`"" `
+        -ArgumentList $argsList `
         -WorkingDirectory (Get-Location) `
         -PassThru
 
@@ -27,4 +42,4 @@ Get-ChildItem -Path $cfgDir -Filter "config_*.json" | ForEach-Object {
     Start-Sleep -Seconds 1
 }
 
-Write-Host "✅ Все стратегии запущены."
+Write-Host "! All jobs started."

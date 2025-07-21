@@ -1,8 +1,25 @@
+import argparse
 import json
 from pathlib import Path
 import copy
-#Генерация конфигураций для dry-run прарллельно для всех стратегий
-# Базовая конфигурация
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(
+    description='Generate dry-run configuration files for freqtrade strategies'
+)
+parser.add_argument(
+    '-e', '--exclude',
+    nargs='*',
+    default=[],
+    help='List of strategy names to exclude from generation'
+)
+args = parser.parse_args()
+exclude_set = set(args.exclude)
+
+if exclude_set:
+    print(f"[i] Excluding strategies: {', '.join(sorted(exclude_set))}")
+
+# Base configuration
 base_config = {
     "$schema": "https://schema.freqtrade.io/schema.json",
     "max_open_trades": 1000,
@@ -75,29 +92,66 @@ base_config = {
     }
 }
 
+# Discover available strategies
+strategies_dir = Path("user_data/strategies")
 strategies = [
     f.stem
-    for f in Path("user_data/strategies").glob("*.py")
+    for f in strategies_dir.glob("*.py")
     if f.is_file() and f.name != "__init__.py"
 ]
 
+# Exclude specified strategies
+filtered_strategies = [s for s in strategies if s not in exclude_set]
+
+# Prepare output directory
 output_dir = Path("user_data/dryrun_configs")
-output_dir.mkdir(exist_ok=True)
+output_dir.mkdir(parents=True, exist_ok=True)
+
 base_port = 8100
 
-for idx, strat in enumerate(strategies):
-    config = copy.deepcopy(base_config)
-    # задаём стратегию и пути
-    config["strategy"] = strat
-    config["logfile"] = f"user_data/dryrun_logs/{strat}.log"
-    config["db_url"] = f"sqlite:///user_data/dryrun_db/{strat}.sqlite"
-    # рассчитываем порт: 8100, 8101, 8102, ...
+for idx, strat in enumerate(filtered_strategies):
+    cfg = copy.deepcopy(base_config)
+    cfg["strategy"] = strat
+    cfg["logfile"] = f"user_data/dryrun_logs/{strat}.log"
+    cfg["db_url"] = f"sqlite:///user_data/dryrun_db/{strat}.sqlite"
+
+    # Assign incremental port per strategy
     port = base_port + idx
-    config["api_server"]["listen_port"] = port
-    # включаем API-сервер
-    config["api_server"]["enabled"] = True
-    # сохраняем файл
+    cfg["api_server"]["listen_port"] = port
+    cfg["api_server"]["enabled"] = True
+
+    # Special config for AI strategies
+    if "AI" in strat:
+        cfg["timeframe"] = "3m"
+        cfg["freqai"] = {
+            "enabled": True,
+            "purge_old_models": 2,
+            "train_period_days": 15,
+            "backtest_period_days": 7,
+            "live_retrain_hours": 0,
+            "identifier": f"{strat}FreqAIV2",
+            "feature_parameters": {
+                "include_timeframes": ["3m", "15m", "1h"],
+                "include_corr_pairlist": ["BTC/USDT", "ETH/USDT"],
+                "label_period_candles": 20,
+                "include_shifted_candles": 3,
+                "DI_threshold": 0.9,
+                "weight_factor": 0.9,
+                "principal_component_analysis": False,
+                "use_SVM_to_remove_outliers": True,
+                "indicator_periods_candles": [10, 20],
+                "plot_feature_importances": 1
+            },
+            "data_split_parameters": {
+                "test_size": 0.33,
+                "random_state": 1
+            },
+            "model_training_parameters": {}
+        }
+
+    # Save configuration file
     cfg_path = output_dir / f"config_{strat}.json"
     with open(cfg_path, "w") as f:
-        json.dump(config, f, indent=4)
+        json.dump(cfg, f, indent=4)
+
     print(f"[✓] Saved config for {strat}: API port {port}")

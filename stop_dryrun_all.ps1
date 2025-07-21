@@ -24,14 +24,14 @@ foreach ($file in $pidFiles) {
         $proc = Get-Process -Id $parsedPid -ErrorAction SilentlyContinue
         if ($proc) {
             Stop-Process -Id $parsedPid -Force -ErrorAction Stop
-            Write-Host "✅ Process '$name' (PID $parsedPid) stopped."
+            Write-Host "Process '$name' (PID $parsedPid) stopped."
         }
         else {
-            Write-Warning "⚠️ Process '$name' (PID $parsedPid) not running."
+            Write-Warning "Process '$name' (PID $parsedPid) not running."
         }
     }
     catch {
-        Write-Warning "❌ Failed to stop '$name': $_"
+        Write-Warning "Failed to stop '$name': $_"
     }
     finally {
         # 4) Всегда убрать .pid-файл

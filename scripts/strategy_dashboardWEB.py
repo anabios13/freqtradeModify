@@ -119,23 +119,38 @@ def main():
         st.warning("Нет данных для отображения. Проверьте папки с результатами.")
         return
 
-    # ——— Фильтры ———
+   # ——— Фильтры ———
     st.sidebar.header("Фильтры")
     strategies = sorted(df['strategy'].unique())
     selected_strats = st.sidebar.multiselect("Стратегии", strategies, default=strategies)
     sources = sorted(df['source'].unique())
     source_filter = st.sidebar.multiselect("Источники", sources, default=sources)
-    min_date = st.sidebar.date_input("Период: с", df['timestamp'].dt.date.min())
-    max_date = st.sidebar.date_input("Период: по", df['timestamp'].dt.date.max())
-    days = st.sidebar.slider("Показать за последние (дней)", 1, 30, 7)
+
+    # Новый чекбокс: либо последние дни, либо свой период
+    use_custom = st.sidebar.checkbox("Использовать пользовательский период", value=False)
 
     now = datetime.now()
+    if use_custom:
+        # показываем поля для ручного ввода
+        min_date = st.sidebar.date_input("Период: с", df['timestamp'].dt.date.min())
+        max_date = st.sidebar.date_input("Период: по", df['timestamp'].dt.date.max())
+        if min_date > max_date:
+            st.sidebar.error("Дата начала должна быть не позже даты конца")
+        # маска по дате
+        date_mask = (
+            (df['timestamp'].dt.date >= min_date) &
+            (df['timestamp'].dt.date <= max_date)
+        )
+    else:
+        # старый слайдер
+        days = st.sidebar.slider("Показать за последние (дней)", 1, 30, 7)
+        date_mask = df['timestamp'] >= (now - timedelta(days=days))
+
+    # объединяем все условия
     mask = (
         df['strategy'].isin(selected_strats) &
         df['source'].isin(source_filter) &
-        (df['timestamp'].dt.date >= min_date) &
-        (df['timestamp'].dt.date <= max_date) &
-        (df['timestamp'] >= now - timedelta(days=days))
+        date_mask
     )
     df = df[mask]
 

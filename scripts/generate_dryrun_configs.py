@@ -61,7 +61,7 @@ base_config = {
         "ccxt_async_config": {},
         "pair_whitelist": [
             "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT",
-            "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "MATIC/USDT",
+            "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
             "DOT/USDT", "LINK/USDT"
         ],
         "pair_blacklist": []

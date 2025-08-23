@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Конфигурация
+WORKTREE="/opt/freqtrade/app"
+COMPOSE_DIR="/opt/freqtrade"
+LOG_FILE="/opt/freqtrade/deploy.log"
+
+# Логирование
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log "🚀 Начало деплоя..."
+
+# Проверяем аргументы
+if [ $# -ne 3 ]; then
+    log "❌ Неверное количество аргументов: $#"
+    exit 1
+fi
+
+oldrev="$1"
+newrev="$2"
+refname="$3"
+
+log "📝 Обновление: $oldrev -> $newrev ($refname)"
+
+# Работаем только с main веткой
+if [[ "$refname" != "refs/heads/main" ]]; then
+    log "⚠️  Пропускаем ветку: $refname"
+    exit 0
+fi
+
+# Первый деплой (когда старый ревиз — нули)
+if [[ "$oldrev" =~ ^0+$ ]]; then
+    log "🎯 Первый деплой - создаем рабочую копию"
+    if [ ! -d "$WORKTREE/.git" ]; then
+        mkdir -p "$WORKTREE"
+        git --work-tree="$WORKTREE" --git-dir="$(pwd)" checkout -f "$newrev"
+    else
+        git --work-tree="$WORKTREE" --git-dir="$(pwd)" checkout -f "$newrev"
+    fi
+    
+    cd "$COMPOSE_DIR"
+    log "🚀 Запускаем все сервисы..."
+    docker compose up -d
+    log "✅ Первый деплой завершен"
+    exit 0
+fi
+
+# Обычный обновляющий деплой
+log "📥 Обновляем рабочую копию..."
+git --work-tree="$WORKTREE" --git-dir="$(pwd)" checkout -f "$newrev"
+
+# Получаем список измененных файлов
+log "🔍 Анализируем изменения..."
+CHANGED_FILES=$(git --git-dir="$(pwd)" diff --name-only "$oldrev" "$newrev" || true)
+
+if [ -z "$CHANGED_FILES" ]; then
+    log "ℹ️  Файлы не изменились"
+    exit 0
+fi
+
+log "📋 Измененные файлы:"
+echo "$CHANGED_FILES" | while read -r file; do
+    log "   - $file"
+done
+
+# Маппинг: какие файлы → какой сервис перезапускать
+RESTART_SERVICES=""
+
+# Обычные стратегии
+if echo "$CHANGED_FILES" | grep -qE 'user_data/strategies/Bandtastic\.py|user_data/configs/config_bandtastic\.json'; then
+    RESTART_SERVICES="$RESTART_SERVICES ft-bandtastic"
+    log "🔄 Будет перезапущен: ft-bandtastic"
+fi
+
+if echo "$CHANGED_FILES" | grep -qE 'user_data/strategies/RsiStrategy\.py|user_data/configs/config_rsi\.json'; then
+    RESTART_SERVICES="$RESTART_SERVICES ft-rsi"
+    log "🔄 Будет перезапущен: ft-rsi"
+fi
+
+if echo "$CHANGED_FILES" | grep -qE 'user_data/strategies/Strategy001\.py|user_data/configs/config_strategy001\.json'; then
+    RESTART_SERVICES="$RESTART_SERVICES ft-strategy001"
+    log "🔄 Будет перезапущен: ft-strategy001"
+fi
+
+# FreqAI стратегии
+if echo "$CHANGED_FILES" | grep -qE 'user_data/strategies/BandtasticFreqAI\.py|user_data/configs/config_bandtastic_freqai\.json'; then
+    RESTART_SERVICES="$RESTART_SERVICES ft-bandtastic-freqai"
+    log "🔄 Будет перезапущен: ft-bandtastic-freqai"
+fi
+
+if echo "$CHANGED_FILES" | grep -qE 'user_data/strategies/HighFreqAIStrategy\.py|user_data/configs/config_highfreq_ai\.json'; then
+    RESTART_SERVICES="$RESTART_SERVICES ft-highfreq-ai"
+    log "🔄 Будет перезапущен: ft-highfreq-ai"
+fi
+
+if echo "$CHANGED_FILES" | grep -qE 'user_data/strategies/FreqAIExampleStrategy\.py|user_data/configs/config_freqai_example\.json'; then
+    RESTART_SERVICES="$RESTART_SERVICES ft-freqai-example"
+    log "🔄 Будет перезапущен: ft-freqai-example"
+fi
+
+# Если меняли общие файлы/compose/дашборд — поднимаем всех
+if echo "$CHANGED_FILES" | grep -qE '(^|/)docker-compose\.yml|(^|/)scripts/|(^|/)requirements\.txt|(^|/)\.env'; then
+    log "🔄 Общие файлы изменены - перезапускаем все сервисы"
+    cd "$COMPOSE_DIR"
+    docker compose up -d
+    log "✅ Все сервисы перезапущены"
+    exit 0
+fi
+
+# Точечный перезапуск
+if [ -n "$RESTART_SERVICES" ]; then
+    log "🎯 Перезапускаем сервисы: $RESTART_SERVICES"
+    cd "$COMPOSE_DIR"
+    
+    # Останавливаем только нужные сервисы
+    docker compose stop $RESTART_SERVICES
+    
+    # Ждем завершения
+    sleep 5
+    
+    # Запускаем заново
+    docker compose up -d $RESTART_SERVICES
+    
+    log "✅ Сервисы перезапущены: $RESTART_SERVICES"
+else
+    log "ℹ️  Нет стратегий для перезапуска"
+fi
+
+log "🎉 Деплой завершен успешно"

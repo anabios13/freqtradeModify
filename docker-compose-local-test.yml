@@ -1,0 +1,306 @@
+version: "3.8"
+
+services:
+  # Обычные стратегии
+  ft-bandtastic:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft-bandtastic-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      trade
+      --config user_data/configs/config_bandtastic.json
+      --strategy Bandtastic
+    volumes:
+      - .:/app:ro
+      - bandtastic_models_local:/app/user_data/models
+      - bandtastic_db_local:/app/user_data/databases
+      - bandtastic_logs_local:/app/user_data/logs
+      - bandtastic_freqai_local:/app/user_data/freqaimodels
+    environment:
+      - PYTHONPATH=/app
+      - FREQTRADE_USER_DATA_DIR=/app/user_data
+      - FREQTRADE_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+  ft-rsi:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft-rsi-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      trade
+      --config user_data/configs/config_rsi.json
+      --strategy RsiStrategy
+    volumes:
+      - .:/app:ro
+      - rsi_models_local:/app/user_data/models
+      - rsi_db_local:/app/user_data/databases
+      - rsi_logs_local:/app/user_data/logs
+      - rsi_freqai_local:/app/user_data/freqaimodels
+    environment:
+      - PYTHONPATH=/app
+      - FREQTRADE_USER_DATA_DIR=/app/user_data
+      - FREQTRADE_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+  ft-strategy001:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft-strategy001-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      trade
+      --config user_data/configs/config_strategy001.json
+      --strategy Strategy001
+    volumes:
+      - .:/app:ro
+      - s001_models_local:/app/user_data/models
+      - s001_db_local:/app/user_data/databases
+      - s001_logs_local:/app/user_data/logs
+      - s001_freqai_local:/app/user_data/freqaimodels
+    environment:
+      - PYTHONPATH=/app
+      - FREQTRADE_USER_DATA_DIR=/app/user_data
+      - FREQTRADE_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+  # FreqAI стратегии
+  ft-bandtastic-freqai:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft-bandtastic-freqai-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      trade
+      --config user_data/configs/config_bandtastic_freqai.json
+      --strategy BandtasticFreqAI
+      --freqaimodel LightGBMRegressor
+    volumes:
+      - .:/app:ro
+      - bandtastic_freqai_models_local:/app/user_data/models
+      - bandtastic_freqai_db_local:/app/user_data/databases
+      - bandtastic_freqai_logs_local:/app/user_data/logs
+      - bandtastic_freqai_freqai_local:/app/user_data/freqaimodels
+      - bandtastic_freqai_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - FREQTRADE_USER_DATA_DIR=/app/user_data
+      - FREQTRADE_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+
+  ft-highfreq-ai:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft-highfreq-ai-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      trade
+      --config user_data/configs/config_highfreq_ai.json
+      --strategy HighFreqAIStrategy
+      --freqaimodel LightGBMRegressor
+    volumes:
+      - .:/app:ro
+      - highfreq_ai_models_local:/app/user_data/models
+      - highfreq_ai_db_local:/app/user_data/databases
+      - highfreq_ai_logs_local:/app/user_data/logs
+      - highfreq_ai_freqai_local:/app/user_data/freqaimodels
+      - highfreq_ai_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - FREQTRADE_USER_DATA_DIR=/app/user_data
+      - FREQTRADE_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+
+  ft-freqai-example:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft-freqai-example-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      trade
+      --config user_data/configs/config_freqai_example.json
+      --strategy FreqAIExampleStrategy
+      --freqaimodel LightGBMRegressor
+    volumes:
+      - .:/app:ro
+      - freqai_example_models_local:/app/user_data/models
+      - freqai_example_db_local:/app/user_data/databases
+      - freqai_example_logs_local:/app/user_data/logs
+      - freqai_example_freqai_local:/app/user_data/freqaimodels
+      - freqai_example_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - FREQTRADE_USER_DATA_DIR=/app/user_data
+      - FREQTRADE_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+
+  # Data Aggregator сервис
+  data-aggregator:
+    image: python:3.11-slim
+    container_name: data-aggregator-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y curl &&
+        pip install pandas numpy &&
+        python scripts/data_aggregator.py &&
+        while true; do
+          sleep 60 &&
+          python scripts/data_aggregator.py
+        done
+      "
+    volumes:
+      - .:/app:ro
+      # Доступ к базам данных всех стратегий
+      - bandtastic_db_local:/app/user_data/databases:ro
+      - rsi_db_local:/app/user_data/databases:ro
+      - s001_db_local:/app/user_data/databases:ro
+      - bandtastic_freqai_db_local:/app/user_data/databases:ro
+      - highfreq_ai_db_local:/app/user_data/databases:ro
+      - freqai_example_db_local:/app/user_data/databases:ro
+      # Доступ к логам
+      - bandtastic_logs_local:/app/user_data/logs:ro
+      - rsi_logs_local:/app/user_data/logs:ro
+      - s001_logs_local:/app/user_data/logs:ro
+      - bandtastic_freqai_logs_local:/app/user_data/logs:ro
+      - highfreq_ai_logs_local:/app/user_data/logs:ro
+      - freqai_example_logs_local:/app/user_data/logs:ro
+      # Доступ к моделям
+      - bandtastic_models_local:/app/user_data/models:ro
+      - rsi_models_local:/app/user_data/models:ro
+      - s001_models_local:/app/user_data/models:ro
+      - bandtastic_freqai_models_local:/app/user_data/models:ro
+      - highfreq_ai_models_local:/app/user_data/models:ro
+      - freqai_example_models_local:/app/user_data/models:ro
+      # Доступ к FreqAI моделям
+      - bandtastic_freqai_freqai_local:/app/user_data/freqaimodels:ro
+      - highfreq_ai_freqai_local:/app/user_data/freqaimodels:ro
+      - freqai_example_freqai_local:/app/user_data/freqaimodels:ro
+      # Запись в общий том для агрегированных данных
+      - aggregated_data:/tmp/aggregated_data:rw
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 256M
+
+  # Streamlit дашборд
+  streamlit:
+    image: python:3.11-slim
+    container_name: freqtrade-dashboard-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y curl &&
+        pip install streamlit pandas plotly numpy &&
+        streamlit run scripts/strategy_dashboard_restored.py --server.port 8501 --server.address 0.0.0.0
+      "
+    volumes:
+      - .:/app:ro
+      # Read-only доступ к агрегированным данным
+      - aggregated_data:/tmp/aggregated_data:ro
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+    depends_on:
+      - data-aggregator
+
+volumes:
+  # Обычные стратегии (локальные)
+  bandtastic_models_local:
+  bandtastic_db_local:
+  bandtastic_logs_local:
+  bandtastic_freqai_local:
+
+  rsi_models_local:
+  rsi_db_local:
+  rsi_logs_local:
+  rsi_freqai_local:
+
+  s001_models_local:
+  s001_db_local:
+  s001_logs_local:
+  s001_freqai_local:
+
+  # FreqAI стратегии (локальные)
+  bandtastic_freqai_models_local:
+  bandtastic_freqai_db_local:
+  bandtastic_freqai_logs_local:
+  bandtastic_freqai_freqai_local:
+  bandtastic_freqai_data_local:
+
+  highfreq_ai_models_local:
+  highfreq_ai_db_local:
+  highfreq_ai_logs_local:
+  highfreq_ai_freqai_local:
+  highfreq_ai_data_local:
+
+  freqai_example_models_local:
+  freqai_example_db_local:
+  freqai_example_logs_local:
+  freqai_example_freqai_local:
+  freqai_example_data_local:
+
+  # Общий том для агрегированных данных
+  aggregated_data:

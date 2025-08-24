@@ -1,0 +1,321 @@
+# Автоматически сгенерированный docker-compose файл для FreqTrade
+# Создан скриптом generate_docker_compose.py
+# Время генерации: 2025-08-24 17:42:50
+
+version: "3.8"
+
+services:
+  # Data Aggregator для сбора данных всех стратегий
+  data-aggregator:
+    image: python:3.11-slim
+    container_name: data-aggregator-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y curl &&
+        pip install pandas numpy &&
+        python scripts/data_aggregator.py
+      "
+    volumes:
+      - .:/app:ro
+      - shared_models_local:/app/user_data/models:ro
+      - aggregated_data_local:/tmp/aggregated_data:rw
+      - shared_databases_local:/app/user_data/dryrun_db:ro
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 256M
+
+  # Streamlit дашборд
+  streamlit:
+    image: python:3.11-slim
+    container_name: freqtrade-dashboard-local
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y curl &&
+        pip install streamlit pandas plotly numpy &&
+        streamlit run scripts/strategy_dashboard_restored.py --server.port 8501 --server.address 0.0.0.0
+      "
+    volumes:
+      - .:/app:ro
+      - aggregated_data_local:/tmp/aggregated_data:ro
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+    depends_on:
+      - data-aggregator
+
+  ft_bandtastic_01:
+    image: freqtradeorg/freqtrade:stable
+    container_name: ft_bandtastic_02-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_Bandtastic.json
+    ports:
+      - "8100:8100" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - bandtastic_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - bandtastic_logs_local:/app/user_data/logs
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_bandtasticfreqai_03:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft_bandtasticfreqai_04-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_BandtasticFreqAI.json --freqaimodel LightGBMRegressor
+    ports:
+      - "8101:8101" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - bandtasticfreqai_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - bandtasticfreqai_logs_local:/app/user_data/logs
+      - bandtasticfreqai_freqai_local:/app/user_data/freqaimodels
+      - bandtasticfreqai_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_bandtasticfreqaihyperopt_05:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft_bandtasticfreqaihyperopt_06-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_BandtasticFreqAIHyperOpt.json --freqaimodel LightGBMRegressor
+    ports:
+      - "8102:8102" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - bandtasticfreqaihyperopt_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - bandtasticfreqaihyperopt_logs_local:/app/user_data/logs
+      - bandtasticfreqaihyperopt_freqai_local:/app/user_data/freqaimodels
+      - bandtasticfreqaihyperopt_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_freqaiexamplestrategy_07:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft_freqaiexamplestrategy_08-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_FreqAIExampleStrategy.json --freqaimodel LightGBMRegressor
+    ports:
+      - "8103:8103" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - freqaiexamplestrategy_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - freqaiexamplestrategy_logs_local:/app/user_data/logs
+      - freqaiexamplestrategy_freqai_local:/app/user_data/freqaimodels
+      - freqaiexamplestrategy_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_highfreqaistrategy_09:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft_highfreqaistrategy_10-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_HighFreqAIStrategy.json --freqaimodel LightGBMRegressor
+    ports:
+      - "8104:8104" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - highfreqaistrategy_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - highfreqaistrategy_logs_local:/app/user_data/logs
+      - highfreqaistrategy_freqai_local:/app/user_data/freqaimodels
+      - highfreqaistrategy_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_highfreqaistrategyhyperopt_11:
+    image: freqtradeorg/freqtrade:stable_freqaitorch
+    container_name: ft_highfreqaistrategyhyperopt_12-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_HighFreqAIStrategyHyperOpt.json --freqaimodel LightGBMRegressor
+    ports:
+      - "8105:8105" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - highfreqaistrategyhyperopt_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - highfreqaistrategyhyperopt_logs_local:/app/user_data/logs
+      - highfreqaistrategyhyperopt_freqai_local:/app/user_data/freqaimodels
+      - highfreqaistrategyhyperopt_data_local:/app/user_data/data
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_rsistrategy_13:
+    image: freqtradeorg/freqtrade:stable
+    container_name: ft_rsistrategy_14-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_RsiStrategy.json
+    ports:
+      - "8106:8106" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - rsistrategy_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - rsistrategy_logs_local:/app/user_data/logs
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+  ft_strategy001_15:
+    image: freqtradeorg/freqtrade:stable
+    container_name: ft_strategy001_16-local
+    restart: unless-stopped
+    working_dir: /app
+    command: trade --config /app/user_data/configs/config_Strategy001.json
+    ports:
+      - "8107:8107" # Прокидываем REST API порт наружу
+    volumes:
+      - ./user_data:/app/user_data:ro
+      - strategy001_models_local:/app/user_data/models
+      - shared_databases_local:/app/user_data/dryrun_db
+      - strategy001_logs_local:/app/user_data/logs
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 512M
+
+volumes:
+  aggregated_data_local:
+  bandtastic_data_local:
+  bandtastic_db_local:
+  bandtastic_freqai_local:
+  bandtastic_logs_local:
+  bandtastic_models_local:
+  bandtasticfreqai_data_local:
+  bandtasticfreqai_db_local:
+  bandtasticfreqai_freqai_local:
+  bandtasticfreqai_logs_local:
+  bandtasticfreqai_models_local:
+  bandtasticfreqaihyperopt_data_local:
+  bandtasticfreqaihyperopt_db_local:
+  bandtasticfreqaihyperopt_freqai_local:
+  bandtasticfreqaihyperopt_logs_local:
+  bandtasticfreqaihyperopt_models_local:
+  freqaiexamplestrategy_data_local:
+  freqaiexamplestrategy_db_local:
+  freqaiexamplestrategy_freqai_local:
+  freqaiexamplestrategy_logs_local:
+  freqaiexamplestrategy_models_local:
+  highfreqaistrategy_data_local:
+  highfreqaistrategy_db_local:
+  highfreqaistrategy_freqai_local:
+  highfreqaistrategy_logs_local:
+  highfreqaistrategy_models_local:
+  highfreqaistrategyhyperopt_data_local:
+  highfreqaistrategyhyperopt_db_local:
+  highfreqaistrategyhyperopt_freqai_local:
+  highfreqaistrategyhyperopt_logs_local:
+  highfreqaistrategyhyperopt_models_local:
+  rsistrategy_data_local:
+  rsistrategy_db_local:
+  rsistrategy_freqai_local:
+  rsistrategy_logs_local:
+  rsistrategy_models_local:
+  shared_databases_local:
+  shared_models_local:
+  strategy001_data_local:
+  strategy001_db_local:
+  strategy001_freqai_local:
+  strategy001_logs_local:
+  strategy001_models_local:

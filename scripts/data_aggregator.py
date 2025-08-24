@@ -33,7 +33,7 @@ class FreqTradeDataAggregator:
         self.cache_ttl = 300  # 5 минут
         self.lock = threading.Lock()
         
-        # Конфигурация стратегий - используем базы данных из dryrun_db
+        # Конфигурация стратегий - используем базы данных из общего тома
         self.strategies = {
             'bandtastic': {
                 'db_path': '/app/user_data/dryrun_db/Bandtastic.sqlite',
@@ -59,8 +59,8 @@ class FreqTradeDataAggregator:
                 'models_path': '/app/user_data/models',
                 'freqai_path': '/app/user_data/freqaimodels'
             },
-            'highfreq_ai': {
-                'db_path': '/app/user_data/dryrun_db/HighFreqAIStrategy.sqlite',
+            'bandtastic_freqai_hyperopt': {
+                'db_path': '/app/user_data/dryrun_db/BandtasticFreqAIHyperOpt.sqlite',
                 'logs_path': '/app/user_data/logs',
                 'models_path': '/app/user_data/models',
                 'freqai_path': '/app/user_data/freqaimodels'
@@ -70,12 +70,27 @@ class FreqTradeDataAggregator:
                 'logs_path': '/app/user_data/logs',
                 'models_path': '/app/user_data/models',
                 'freqai_path': '/app/user_data/freqaimodels'
+            },
+            'highfreq_ai': {
+                'db_path': '/app/user_data/dryrun_db/HighFreqAIStrategy.sqlite',
+                'logs_path': '/app/user_data/logs',
+                'models_path': '/app/user_data/models',
+                'freqai_path': '/app/user_data/freqaimodels'
+            },
+            'highfreq_ai_hyperopt': {
+                'db_path': '/app/user_data/dryrun_db/HighFreqAIStrategyHyperOpt.sqlite',
+                'logs_path': '/app/user_data/logs',
+                'models_path': '/app/user_data/models',
+                'freqai_path': '/app/user_data/freqaimodels'
             }
         }
         
         # Создаем папку для агрегированных данных
         self.output_dir = Path("/tmp/aggregated_data")
         self.output_dir.mkdir(exist_ok=True)
+        
+        # Ищем доступные базы данных
+        self.find_strategy_databases()
         
         logger.info(f"Data Aggregator инициализирован. Выходная папка: {self.output_dir}")
     
@@ -88,8 +103,37 @@ class FreqTradeDataAggregator:
             
             db_path = Path(strategy_config['db_path'])
             
+            # Проверяем, существует ли база данных
             if not db_path.exists():
-                return {"error": f"База данных не найдена: {db_path}"}
+                # Пытаемся найти альтернативные пути
+                alternative_paths = [
+                    f"/app/user_data/dryrun_db/{strategy_name.capitalize()}.sqlite",
+                    f"/app/user_data/dryrun_db/{strategy_name}.sqlite",
+                    f"/app/user_data/dryrun_db/{strategy_name.lower()}.sqlite"
+                ]
+                
+                db_found = False
+                for alt_path in alternative_paths:
+                    if Path(alt_path).exists():
+                        db_path = Path(alt_path)
+                        logger.info(f"Найдена БД по альтернативному пути: {db_path}")
+                        db_found = True
+                        break
+                
+                if not db_found:
+                    # Если база данных не найдена, возвращаем статус "no_data"
+                    logger.info(f"База данных не найдена для {strategy_name}")
+                    return {
+                        "strategy_name": strategy_name,
+                        "timestamp": datetime.now().isoformat(),
+                        "status": "no_data",
+                        "message": "Стратегия запущена, но данные недоступны",
+                        "total_trades": 0,
+                        "total_profit": 0.0,
+                        "profit_ratio": 0.0,
+                        "win_rate": 0.0,
+                        "recent_trades": []
+                    }
             
             # Подключаемся к базе данных
             conn = sqlite3.connect(str(db_path))
@@ -157,6 +201,51 @@ class FreqTradeDataAggregator:
                     strategy_data["data"][table] = {"error": str(e)}
             
             conn.close()
+            
+            # Устанавливаем статус и подсчитываем статистику
+            if "trades" in strategy_data["data"]:
+                trades = strategy_data["data"]["trades"]
+                strategy_data["status"] = "active"
+                strategy_data["total_trades"] = len(trades)
+                
+                # Подсчитываем общую прибыль
+                total_profit = 0.0
+                for trade in trades:
+                    if isinstance(trade, dict):
+                        # Пробуем разные поля для прибыли
+                        profit_value = None
+                        
+                        # 1. Сначала пробуем profit_ratio (если есть)
+                        if "profit_ratio" in trade and trade["profit_ratio"] is not None:
+                            try:
+                                profit_value = float(trade["profit_ratio"])
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # 2. Если нет profit_ratio, пробуем realized_profit (абсолютная прибыль)
+                        elif "realized_profit" in trade and trade["realized_profit"] is not None:
+                            try:
+                                profit_value = float(trade["realized_profit"])
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # 3. Если нет realized_profit, пробуем close_profit (абсолютная прибыль)
+                        elif "close_profit" in trade and trade["close_profit"] is not None:
+                            try:
+                                profit_value = float(trade["close_profit"])
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # Добавляем прибыль если нашли
+                        if profit_value is not None and not pd.isna(profit_value):
+                            total_profit += profit_value
+                
+                strategy_data["total_profit"] = round(total_profit, 4)
+            else:
+                strategy_data["status"] = "no_data"
+                strategy_data["total_trades"] = 0
+                strategy_data["total_profit"] = 0.0
+            
             return strategy_data
             
         except Exception as e:
@@ -191,48 +280,19 @@ class FreqTradeDataAggregator:
             total_profit = 0.0
             active_strategies = 0
             
+            # Собираем данные всех стратегий
             for strategy_name in self.strategies.keys():
+                logger.info(f"Собираем данные для стратегии: {strategy_name}")
                 strategy_data = self.get_strategy_data(strategy_name)
                 
                 if "error" not in strategy_data:
-                    active_strategies += 1
-                    
                     # Подсчитываем статистику
-                    if "trades" in strategy_data.get("data", {}):
-                        trades = strategy_data["data"]["trades"]
-                        total_trades += len(trades)
-                        
-                        # Считаем общую прибыль
-                        for trade in trades:
-                            if isinstance(trade, dict):
-                                # Пробуем разные поля для прибыли
-                                profit_value = None
-                                if "profit_ratio" in trade:
-                                    profit_value = trade["profit_ratio"]
-                                elif "realized_profit" in trade:
-                                    # Конвертируем realized_profit в процент от stake_amount
-                                    try:
-                                        stake_amount = float(trade.get("stake_amount", 1))
-                                        if stake_amount > 0:
-                                            profit_value = float(trade["realized_profit"]) / stake_amount
-                                    except (ValueError, TypeError):
-                                        pass
-                                elif "close_profit" in trade:
-                                    # Конвертируем close_profit в процент от stake_amount
-                                    try:
-                                        stake_amount = float(trade.get("stake_amount", 1))
-                                        if stake_amount > 0:
-                                            profit_value = float(trade["close_profit"]) / stake_amount
-                                    except (ValueError, TypeError):
-                                        pass
-                                
-                                if profit_value is not None:
-                                    try:
-                                        profit_ratio = float(profit_value)
-                                        if not pd.isna(profit_ratio):
-                                            total_profit += profit_ratio
-                                    except (ValueError, TypeError):
-                                        pass
+                    if strategy_data.get('status') == 'active':
+                        active_strategies += 1
+                    
+                    # Считаем сделки для всех стратегий, независимо от статуса
+                    total_trades += strategy_data.get('total_trades', 0)
+                    total_profit += strategy_data.get('total_profit', 0.0)
                 
                 all_data["strategies"][strategy_name] = strategy_data
             
@@ -291,19 +351,41 @@ class FreqTradeDataAggregator:
         all_data = self.get_all_strategies_data()
         recent_trades = []
         
+        logger.info(f"Собираем последние сделки, лимит: {limit}")
+        
         for strategy_name, strategy_data in all_data["strategies"].items():
             if "error" not in strategy_data:
                 trades = strategy_data.get("data", {}).get("trades", [])
+                logger.info(f"Стратегия {strategy_name}: найдено {len(trades)} сделок")
+                
                 for trade in trades:
                     if isinstance(trade, dict):
                         trade["strategy"] = strategy_name
                         recent_trades.append(trade)
+                        
+                        # Логируем первые несколько сделок для отладки
+                        if len(recent_trades) <= 3:
+                            logger.info(f"Сделка {len(recent_trades)}: strategy={trade.get('strategy')}, "
+                                      f"open_date={trade.get('open_date')}, close_date={trade.get('close_date')}")
         
-        # Сортируем по дате закрытия, обрабатывая None значения
-        recent_trades.sort(
-            key=lambda x: x.get("close_date", "") or x.get("open_date", ""),
-            reverse=True
-        )
+        logger.info(f"Всего собрано сделок: {len(recent_trades)}")
+        
+        # Сортируем по дате, обрабатывая None значения
+        def get_sort_key(trade):
+            close_date = trade.get("close_date")
+            open_date = trade.get("open_date")
+            
+            # Если есть close_date и он не None, используем его
+            if close_date and close_date != "None" and close_date != "null":
+                return close_date
+            # Иначе используем open_date
+            elif open_date and open_date != "None" and open_date != "null":
+                return open_date
+            # Если нет ни одной даты, возвращаем пустую строку
+            else:
+                return ""
+        
+        recent_trades.sort(key=get_sort_key, reverse=True)
         
         return recent_trades[:limit]
     
@@ -428,6 +510,39 @@ class FreqTradeDataAggregator:
         except Exception as e:
             logger.error(f"Ошибка при сохранении данных для Streamlit: {e}")
             return False
+
+    def find_strategy_databases(self) -> Dict[str, str]:
+        """Динамически ищет базы данных стратегий в различных местах"""
+        databases = {}
+        
+        # Основная папка dryrun_db
+        main_db_path = Path("/app/user_data/dryrun_db")
+        if main_db_path.exists():
+            for db_file in main_db_path.glob("*.sqlite"):
+                if not db_file.name.endswith(('-shm', '-wal')):
+                    strategy_name = db_file.stem
+                    databases[strategy_name.lower()] = str(db_file)
+                    logger.info(f"Найдена БД: {strategy_name} -> {db_file}")
+        
+        # Проверяем, есть ли базы данных в других стратегиях
+        strategy_mapping = {
+            'bandtastic': 'Bandtastic',
+            'rsi': 'RsiStrategy', 
+            'strategy001': 'Strategy001',
+            'bandtastic_freqai': 'BandtasticFreqAI',
+            'bandtastic_freqai_hyperopt': 'BandtasticFreqAIHyperOpt',
+            'freqai_example': 'FreqaiExampleStrategy',
+            'highfreq_ai': 'HighFreqAIStrategy',
+            'highfreq_ai_hyperopt': 'HighFreqAIStrategyHyperOpt'
+        }
+        
+        # Обновляем пути к базам данных на основе найденных файлов
+        for strategy_key, db_name in strategy_mapping.items():
+            if db_name.lower() in databases:
+                self.strategies[strategy_key]['db_path'] = databases[db_name.lower()]
+                logger.info(f"Обновлен путь для {strategy_key}: {databases[db_name.lower()]}")
+        
+        return databases
 
 def main():
     """Основная функция для запуска агрегатора"""

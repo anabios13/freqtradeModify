@@ -27,6 +27,22 @@ st.set_page_config(
 st.title("📊 FreqTrade Dashboard - Восстановленный")
 st.markdown("---")
 
+def get_container_info(strategy_name):
+    """Возвращает имя контейнера и порт API для стратегии"""
+    # Маппинг стратегий на контейнеры и порты
+    strategy_mapping = {
+        'bandtastic': ('ft_bandtastic_02-local', 8100),
+        'rsi': ('ft_rsistrategy_14-local', 8106),
+        'strategy001': ('ft_strategy001_16-local', 8107),
+        'bandtastic_freqai': ('ft_bandtasticfreqai_04-local', 8101),
+        'bandtastic_freqai_hyperopt': ('ft_bandtasticfreqaihyperopt_06-local', 8102),
+        'freqai_example': ('ft_freqaiexamplestrategy_08-local', 8103),
+        'highfreq_ai': ('ft_highfreqaistrategy_10-local', 8104),
+        'highfreq_ai_hyperopt': ('ft_highfreqaistrategyhyperopt_12-local', 8105)
+    }
+    
+    return strategy_mapping.get(strategy_name, ('unknown', 8100))
+
 @st.cache_data(ttl=300)  # Кэш на 5 минут
 def load_aggregated_data():
     """Загружает агрегированные данные"""
@@ -81,8 +97,10 @@ def create_profit_chart(profit_data):
     fig.update_layout(height=600, showlegend=False)
     return fig
 
-def create_trades_timeline(recent_trades):
-    """Создает временную шкалу сделок"""
+
+
+def create_enhanced_trades_timeline(recent_trades):
+    """Создает детальную временную шкалу сделок по стратегиям"""
     if not recent_trades:
         return None
     
@@ -93,19 +111,121 @@ def create_trades_timeline(recent_trades):
     if 'strategy' not in df.columns:
         df['strategy'] = 'Unknown'
     
+    # Создаем дату для каждой сделки
+    df['date'] = None
+    
+    for idx, row in df.iterrows():
+        if pd.notna(row.get('close_date')) and row['close_date'] is not None:
+            # Закрытая сделка - используем close_date
+            df.at[idx, 'date'] = pd.to_datetime(row['close_date']).date()
+        elif pd.notna(row.get('open_date')) and row['open_date'] is not None:
+            # Открытая сделка - используем open_date
+            df.at[idx, 'date'] = pd.to_datetime(row['open_date']).date()
+        else:
+            continue
+    
+    # Убираем строки без даты
+    df = df.dropna(subset=['date'])
+    
+    if df.empty:
+        return None
+    
     # Группируем по дате и стратегии
-    df['date'] = pd.to_datetime(df['close_date']).dt.date
     daily_trades = df.groupby(['date', 'strategy']).size().reset_index(name='count')
     
-    fig = px.line(
-        daily_trades, 
+    # Создаем полную матрицу дат и стратегий
+    all_dates = sorted(daily_trades['date'].unique())
+    all_strategies = sorted(daily_trades['strategy'].unique())
+    
+    # Создаем полную матрицу с нулевыми значениями для отсутствующих комбинаций
+    complete_matrix = []
+    for date in all_dates:
+        for strategy in all_strategies:
+            # Ищем существующую запись
+            existing_record = daily_trades[
+                (daily_trades['date'] == date) & 
+                (daily_trades['strategy'] == strategy)
+            ]
+            
+            if len(existing_record) > 0:
+                count = existing_record.iloc[0]['count']
+            else:
+                count = 0
+            
+            complete_matrix.append({
+                'date': date,
+                'strategy': strategy,
+                'count': count
+            })
+    
+    # Создаем DataFrame из полной матрицы
+    complete_df = pd.DataFrame(complete_matrix)
+    
+    # Сортируем по дате
+    complete_df = complete_df.sort_values('date')
+    
+    # Создаем график
+    fig = px.bar(
+        complete_df, 
         x='date', 
         y='count', 
         color='strategy',
-        title='Количество сделок по дням'
+        title='Количество сделок по дням и стратегиям',
+        barmode='group'
     )
     
-    fig.update_layout(height=400)
+    fig.update_layout(height=600, showlegend=True)
+    return fig
+
+def create_hourly_activity_chart(recent_trades):
+    """Создает график активности по часам"""
+    if not recent_trades:
+        return None
+    
+    # Конвертируем в DataFrame
+    df = pd.DataFrame(recent_trades)
+    
+    # Добавляем стратегию если её нет
+    if 'strategy' not in df.columns:
+        df['strategy'] = 'Unknown'
+    
+    # Создаем время для каждой сделки
+    df['hour'] = None
+    
+    for idx, row in df.iterrows():
+        if pd.notna(row.get('close_date')) and row['close_date'] is not None:
+            # Закрытая сделка - используем close_date
+            df.at[idx, 'hour'] = pd.to_datetime(row['close_date']).hour
+        elif pd.notna(row.get('open_date')) and row['open_date'] is not None:
+            # Открытая сделка - используем open_date
+            df.at[idx, 'hour'] = pd.to_datetime(row['open_date']).hour
+        else:
+            continue
+    
+    # Убираем строки без времени
+    df = df.dropna(subset=['hour'])
+    
+    if df.empty:
+        return None
+    
+    # Группируем по часу и стратегии
+    hourly_trades = df.groupby(['hour', 'strategy']).size().reset_index(name='count')
+    
+    # Сортируем по часу
+    hourly_trades = hourly_trades.sort_values('hour')
+    
+    # Создаем график активности по часам
+    fig = px.bar(
+        hourly_trades, 
+        x='hour', 
+        y='count', 
+        color='strategy',
+        title='Активность сделок по часам (UTC)',
+        barmode='group'
+    )
+    
+    fig.update_layout(height=400, showlegend=True)
+    fig.update_xaxes(tickmode='linear', tick0=0, dtick=1)
     return fig
 
 def create_strategy_status_chart(summary_data):
@@ -147,6 +267,40 @@ def create_strategy_status_chart(summary_data):
     
     fig.update_layout(height=400, showlegend=False)
     return fig
+
+def create_detailed_strategy_status(summary_data, all_strategies_data):
+    """Создает детальное отображение статуса стратегий с ошибками и ссылками на логи"""
+    if not summary_data or 'strategies' not in summary_data:
+        return None
+    
+    strategies = summary_data['strategies']
+    
+    # Группируем стратегии по статусу
+    active_strategies = []
+    error_strategies = []
+    
+    for strategy_name, strategy_info in strategies.items():
+        if strategy_info.get('status') == 'active':
+            # Получаем полные данные стратегии из all_strategies_data
+            full_strategy_data = all_strategies_data.get('strategies', {}).get(strategy_name, {})
+            
+            active_strategies.append({
+                'name': strategy_name,
+                'trades_count': strategy_info.get('trades_count', 0),
+                'total_profit': full_strategy_data.get('total_profit', 0.0),
+                'last_update': strategy_info.get('last_update', '')
+            })
+        else:
+            error_strategies.append({
+                'name': strategy_name,
+                'error': strategy_info.get('error', 'Неизвестная ошибка'),
+                'last_update': strategy_info.get('last_update', '')
+            })
+    
+    return {
+        'active': active_strategies,
+        'error': error_strategies
+    }
 
 def main():
     """Основная функция дашборда"""
@@ -211,6 +365,66 @@ def main():
     # Статус стратегий
     if 'summary' in data:
         st.subheader("📊 Статус стратегий")
+        
+        # Детальный статус стратегий
+        detailed_status = create_detailed_strategy_status(data['summary'], data)
+        if detailed_status:
+            # Создаем две колонки для статуса
+            status_col1, status_col2 = st.columns(2)
+            
+            with status_col1:
+                st.subheader("✅ Активные стратегии")
+                if detailed_status['active']:
+                    for strategy in detailed_status['active']:
+                        with st.container():
+                            col1, col2, col3 = st.columns([2, 1, 1])
+                            with col1:
+                                st.write(f"**{strategy['name']}**")
+                            with col2:
+                                st.metric("Сделки", strategy['trades_count'])
+                            with col3:
+                                st.metric("Прибыль", f"{strategy['total_profit']:.4f}")
+                        
+                        # Добавляем ссылки на логи и API для активных стратегий
+                        container_name, api_port = get_container_info(strategy['name'])
+                        with st.expander(f"🔗 Ссылки для {strategy['name']}"):
+                            st.markdown(f"""
+                            **Логи контейнера:**
+                            ```bash
+                            docker logs {container_name}
+                            ```
+                            **REST API:**
+                            ```bash
+                            curl -u freqtrader:SuperSecurePassword http://localhost:{api_port}/api/v1/status
+                            ```
+                            """)
+                else:
+                    st.info("Нет активных стратегий")
+            
+            with status_col2:
+                st.subheader("❌ Стратегии с ошибками")
+                if detailed_status['error']:
+                    for strategy in detailed_status['error']:
+                        with st.container():
+                            st.error(f"**{strategy['name']}**")
+                            st.write(f"Ошибка: {strategy['error']}")
+                            
+                            # Определяем имя контейнера и порт для стратегии
+                            container_name, api_port = get_container_info(strategy['name'])
+                            st.markdown(f"""
+                            **Логи контейнера:**
+                            ```bash
+                            docker logs {container_name}
+                            ```
+                            **REST API:**
+                            ```bash
+                            curl -u freqtrader:SuperSecurePassword http://localhost:{api_port}/api/v1/status
+                            ```
+                            """)
+                else:
+                    st.success("Все стратегии работают корректно")
+        
+        # График статуса (для визуализации)
         status_chart = create_strategy_status_chart(data['summary'])
         if status_chart:
             st.plotly_chart(status_chart, use_container_width=True)
@@ -231,9 +445,24 @@ def main():
     # Временная шкала сделок
     if 'recent_trades' in data:
         st.subheader("📅 Временная шкала сделок")
-        timeline_chart = create_trades_timeline(data['recent_trades'])
-        if timeline_chart:
-            st.plotly_chart(timeline_chart, use_container_width=True)
+        
+
+        
+        # Детальная временная шкала по стратегиям
+        enhanced_timeline = create_enhanced_trades_timeline(data['recent_trades'])
+        if enhanced_timeline:
+            st.subheader("📊 Детальная временная шкала по стратегиям")
+            st.plotly_chart(enhanced_timeline, use_container_width=True)
+        else:
+            st.warning("Не удалось создать детальную временную шкалу.")
+        
+        # График активности по часам
+        hourly_chart = create_hourly_activity_chart(data['recent_trades'])
+        if hourly_chart:
+            st.subheader("🕐 Активность сделок по часам")
+            st.plotly_chart(hourly_chart, use_container_width=True)
+        else:
+            st.warning("Не удалось создать график активности по часам.")
     
     # Последние сделки
     if 'recent_trades' in data and data['recent_trades']:

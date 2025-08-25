@@ -24,7 +24,7 @@ st.set_page_config(
 )
 
 # Заголовок
-st.title("📊 FreqTrade Dashboard - Восстановленный")
+st.title("📊 Dashboard")
 st.markdown("---")
 
 def get_container_info(strategy_name):
@@ -62,7 +62,7 @@ def load_aggregated_data():
 def format_timestamp(timestamp_str):
     """Форматирует временную метку"""
     try:
-        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+04:00'))
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except:
         return timestamp_str

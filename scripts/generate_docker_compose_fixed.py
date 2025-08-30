@@ -1,510 +1,464 @@
-#!/usr/bin/env python3
 """
-Автоматическая генерация docker-compose файла для FreqTrade
-Загружает все стратегии и конфигурации из папок и создает соответствующие сервисы
+Streamlit Dashboard для FreqTrade
+- Гибкая мапа контейнеров (через /app/user_data/containers.json)
+- Реальная интерпретация статусов (active / no_data / error)
+- Фильтр по датам (N дней ≤ 100 или произвольный период)
+- Корректная сортировка сделок по датам
 """
 
-import os
+from __future__ import annotations
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 import json
-import re
 from pathlib import Path
-from typing import Dict, List, Tuple
-import argparse
-from datetime import datetime
+import time
+from datetime import datetime, timedelta, date
+import numpy as np
+from typing import Dict, Any, List, Optional
 
-class DockerComposeGenerator:
-    """Генератор docker-compose файла для FreqTrade"""
-    
-    def __init__(self, base_dir: str = "."):
-        self.base_dir = Path(base_dir)
-        self.strategies_dir = self.base_dir / "user_data" / "strategies"
-        self.configs_dir = self.base_dir / "user_data" / "dryrun_configs"
-        self.scripts_dir = self.base_dir / "scripts"
-        
-        # Шаблоны для определения типа стратегии
-        self.freqai_patterns = [
-            r'freqai', r'FreqAI', r'hyperopt', r'HyperOpt'
-        ]
-        
-        # Стратегии, которые нужно исключить
-        self.exclude_patterns = [
-            r'StopLossTrail'
-        ]
-        
-        # Счетчики для именования
-        self.service_counter = 0
-        self.port_counter = 0  # Счетчик для портов API
-        
-    def is_freqai_strategy(self, strategy_name: str) -> bool:
-        """Определяет, является ли стратегия FreqAI"""
-        strategy_lower = strategy_name.lower()
-        return any(re.search(pattern, strategy_lower) for pattern in self.freqai_patterns)
-    
-    def should_exclude_strategy(self, strategy_name: str) -> bool:
-        """Определяет, нужно ли исключить стратегию"""
-        strategy_lower = strategy_name.lower()
-        return any(re.search(pattern, strategy_lower) for pattern in self.exclude_patterns)
-    
-    def get_strategy_files(self) -> List[Tuple[str, Path]]:
-        """Получает список файлов стратегий"""
-        strategies = []
-        
-        if not self.strategies_dir.exists():
-            print(f"Папка стратегий не найдена: {self.strategies_dir}")
-            return strategies
-        
-        for file_path in self.strategies_dir.glob("*.py"):
-            if file_path.name.startswith("__"):
-                continue
-                
-            strategy_name = file_path.stem
-            
-            # Пропускаем исключенные стратегии
-            if self.should_exclude_strategy(strategy_name):
-                print(f"Пропускаем стратегию: {strategy_name} (исключена)")
-                continue
-            
-            strategies.append((strategy_name, file_path))
-            print(f"Найдена стратегия: {strategy_name}")
-        
-        return strategies
-    
-    def get_config_files(self) -> List[Tuple[str, Path]]:
-        """Получает список файлов конфигураций"""
-        configs = []
-        
-        if not self.configs_dir.exists():
-            print(f"Папка конфигураций не найдена: {self.configs_dir}")
-            return configs
-        
-        for file_path in self.configs_dir.glob("config_*.json"):
-            config_name = file_path.stem.replace("config_", "")
-            configs.append((config_name, file_path))
-            print(f"Найдена конфигурация: {config_name}")
-        
-        return configs
-    
-    def find_matching_config(self, strategy_name: str, configs: List[Tuple[str, Path]]) -> Path:
-        """Находит подходящую конфигурацию для стратегии"""
-        # Сортируем конфигурации по длине названия (от длинных к коротким)
-        # Это обеспечивает приоритет более специфичных конфигураций
-        sorted_configs = sorted(configs, key=lambda x: len(x[0]), reverse=True)
-        
-        # Ищем точное совпадение
-        for config_name, config_path in sorted_configs:
-            if config_name.lower() == strategy_name.lower():
-                return config_path
-        
-        # Ищем конфигурацию, которая содержит полное название стратегии
-        # Это обеспечивает точное сопоставление
-        for config_name, config_path in sorted_configs:
-            if strategy_name.lower() in config_name.lower():
-                return config_path
-        
+# ---------- Page setup ----------
+st.set_page_config(
+    page_title="FreqTrade Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title("📊 Dashboard")
+st.markdown("---")
+
+
+# ---------- Utils ----------
+
+def get_container_info(strategy_name: str) -> tuple[str, Optional[int]]:
+    """Имя контейнера и порт API. Сначала пробуем /app/user_data/containers.json, затем дефолты."""
+    default_mapping = {
+        'bandtastic': ('ft_bandtastic_02-local', 8100),
+        'rsi': ('ft_rsistrategy_14-local', 8106),
+        'strategy001': ('ft_strategy001_16-local', 8107),
+        'bandtastic_freqai': ('ft_bandtasticfreqai_04-local', 8101),
+        'bandtastic_freqai_hyperopt': ('ft_bandtasticfreqaihyperopt_06-local', 8102),
+        'freqai_example': ('ft_freqaiexamplestrategy_08-local', 8103),
+        'highfreq_ai': ('ft_highfreqaistrategy_10-local', 8104),
+        'highfreq_ai_hyperopt': ('ft_highfreqaistrategyhyperopt_12-local', 8105),
+    }
+    try:
+        cfg = Path("/app/user_data/containers.json")
+        if cfg.exists():
+            with open(cfg, "r", encoding="utf-8") as f:
+                external = json.load(f)
+            if strategy_name in external:
+                val = external[strategy_name]
+                if isinstance(val, list) and len(val) >= 2:
+                    return str(val[0]), int(val[1])
+                if isinstance(val, dict):
+                    return str(val.get("name", strategy_name)), int(val.get("port")) if val.get("port") else None
+    except Exception:
+        pass
+    return default_mapping.get(strategy_name, (strategy_name, None))
+
+
+@st.cache_data(ttl=300)
+def load_aggregated_data() -> Optional[Dict[str, Any]]:
+    """Загружает агрегированный JSON, который готовит data_aggregator.py"""
+    try:
+        data_file = Path("/tmp/aggregated_data/streamlit_data.json")
+        if data_file.exists():
+            with open(data_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        st.error("Файл с агрегированными данными не найден. Запустите data_aggregator.py")
         return None
-    
-    def generate_service_name(self, strategy_name: str) -> str:
-        """Генерирует имя сервиса для Docker"""
-        # Убираем специальные символы и приводим к нижнему регистру
-        service_name = re.sub(r'[^a-zA-Z0-9]', '_', strategy_name).lower()
-        service_name = re.sub(r'_+', '_', service_name).strip('_')
-        
-        # Добавляем префикс для уникальности
-        self.service_counter += 1
-        return f"ft_{service_name}_{self.service_counter:02d}"
-    
-    def generate_container_name(self, strategy_name: str) -> str:
-        """Генерирует имя контейнера"""
-        service_name = self.generate_service_name(strategy_name)
-        return f"{service_name}-local"
-    
-    def generate_volume_names(self, strategy_name: str) -> Dict[str, str]:
-        """Генерирует имена томов для стратегии"""
-        base_name = strategy_name.lower().replace(' ', '_')
-        return {
-            'models': f"{base_name}_models_local",
-            'db': f"{base_name}_db_local",
-            'logs': f"{base_name}_logs_local",
-            'freqai': f"{base_name}_freqai_local",
-            'data': f"{base_name}_data_local"
-        }
-    
-    def get_api_port_from_config(self, strategy_name: str, config_path: Path) -> int:
-        """Получает порт API из конфигурации стратегии"""
+    except Exception as e:
+        st.error(f"Ошибка при загрузке данных: {e}")
+        return None
+
+
+def format_timestamp(ts: str) -> str:
+    """ISO8601 → красивый формат. Учитываем Z (UTC)."""
+    try:
+        if ts.endswith("Z"):
+            ts = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ts
+
+
+def _trade_event_dt(trade: Dict[str, Any]) -> Optional[pd.Timestamp]:
+    """Время события сделки: приоритет close_date → open_date. Возвращаем pd.Timestamp (naive UTC)."""
+    raw = trade.get("close_date") or trade.get("open_date")
+    if not raw:
+        return None
+    try:
+        return pd.to_datetime(raw, utc=True).tz_convert(None)
+    except Exception:
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-            
-            # Возвращаем сохраненный порт
-            if "_api_port" in config_data:
-                return config_data["_api_port"]
-            else:
-                # Если порт не найден, возвращаем порт по умолчанию
-                print(f"      ⚠️  Порт API не найден для {strategy_name}, используем 8100")
-                return 8100
-        except Exception as e:
-            print(f"      ⚠️  Ошибка чтения порта API для {strategy_name}: {e}")
-            # Возвращаем порт по умолчанию
-            return 8100
-    
-    def generate_freqtrade_service(self, strategy_name: str, config_path: Path, is_freqai: bool) -> str:
-        """Генерирует сервис FreqTrade для стратегии"""
-        service_name = self.generate_service_name(strategy_name)
-        container_name = self.generate_container_name(strategy_name)
-        volumes = self.generate_volume_names(strategy_name)
-        
-        # Определяем образ в зависимости от типа стратегии
-        image = "freqtradeorg/freqtrade:stable_freqaitorch" if is_freqai else "freqtradeorg/freqtrade:stable"
-        
-        # Определяем команду (учитываем, что образ уже имеет ENTRYPOINT для freqtrade)
-        if is_freqai:
-            command = f'trade --config /app/user_data/configs/{config_path.name} --freqaimodel LightGBMRegressor'
+            return pd.to_datetime(raw).tz_localize(None)
+        except Exception:
+            return None
+
+
+def _get_trades_date_min_max(trades: List[Dict[str, Any]]) -> tuple[Optional[date], Optional[date]]:
+    if not trades:
+        return (None, None)
+    dts = [_trade_event_dt(t) for t in trades]
+    dts = [d for d in dts if d is not None]
+    if not dts:
+        return (None, None)
+    return (min(dts).date(), max(dts).date())
+
+
+def filter_trades_by_period(trades: List[Dict[str, Any]], start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
+    res = []
+    for t in trades or []:
+        ev = _trade_event_dt(t)
+        if ev is None:
+            continue
+        if start_dt <= ev <= end_dt:
+            res.append(t)
+    return res
+
+
+def recompute_profit_by_strategy(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Суммируем ABS прибыль и winrate по стратегиям для выбранного периода"""
+    if not trades:
+        return {"by_strategy": {}}
+    per = {}
+    for t in trades:
+        s = t.get("strategy") or "Unknown"
+        try:
+            p = float(t.get("realized_profit") or 0.0)
+        except Exception:
+            p = 0.0
+        d = per.setdefault(s, {"profit": 0.0, "wins": 0, "losses": 0, "total": 0})
+        d["profit"] += p
+        d["wins"] += 1 if p > 0 else 0
+        d["losses"] += 1 if p < 0 else 0
+        d["total"] += 1
+    out = {}
+    for s, d in per.items():
+        total = max(d["total"], 1)
+        out[s] = {"profit": d["profit"], "win_rate": (d["wins"] / total) * 100.0}
+    return {"by_strategy": out}
+
+
+# ---------- Charts ----------
+
+def create_profit_chart(profit_data: Dict[str, Any]):
+    if not profit_data or "by_strategy" not in profit_data or not profit_data["by_strategy"]:
+        return None
+    strategies = list(profit_data["by_strategy"].keys())
+    profits = [profit_data["by_strategy"][s]["profit"] for s in strategies]
+    win_rates = [profit_data["by_strategy"][s]["win_rate"] for s in strategies]
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=("Прибыль по стратегиям", "Процент выигрышных сделок"),
+        vertical_spacing=0.1
+    )
+    fig.add_trace(go.Bar(x=strategies, y=profits, name="Прибыль"), row=1, col=1)
+    fig.add_trace(go.Bar(x=strategies, y=win_rates, name="Win Rate %"), row=2, col=1)
+    fig.update_layout(height=600, showlegend=False)
+    return fig
+
+
+def create_enhanced_trades_timeline(recent_trades: List[Dict[str, Any]]):
+    if not recent_trades:
+        return None
+    df = pd.DataFrame(recent_trades)
+    if "strategy" not in df.columns:
+        df["strategy"] = "Unknown"
+
+    # безопасное извлечение дат (close/open)
+    def _get_date(row):
+        raw = row.get("close_date") or row.get("open_date")
+        if raw is None:
+            return None
+        try:
+            return pd.to_datetime(raw, utc=True).date()
+        except Exception:
+            try:
+                return pd.to_datetime(raw).date()
+            except Exception:
+                return None
+
+    df["date"] = df.apply(_get_date, axis=1)
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return None
+
+    daily = df.groupby(["date", "strategy"]).size().reset_index(name="count")
+    all_dates = sorted(daily["date"].unique())
+    all_strats = sorted(daily["strategy"].unique())
+
+    matrix = []
+    for d in all_dates:
+        for s in all_strats:
+            exist = daily[(daily["date"] == d) & (daily["strategy"] == s)]
+            cnt = int(exist.iloc[0]["count"]) if len(exist) > 0 else 0
+            matrix.append({"date": d, "strategy": s, "count": cnt})
+
+    complete = pd.DataFrame(matrix).sort_values("date")
+    fig = px.bar(complete, x="date", y="count", color="strategy",
+                 title="Количество сделок по дням и стратегиям", barmode="group")
+    fig.update_layout(height=600, showlegend=True)
+    return fig
+
+
+def create_hourly_activity_chart(recent_trades: List[Dict[str, Any]]):
+    if not recent_trades:
+        return None
+    df = pd.DataFrame(recent_trades)
+    if "strategy" not in df.columns:
+        df["strategy"] = "Unknown"
+
+    def _get_hour(row):
+        raw = row.get("close_date") or row.get("open_date")
+        if raw is None:
+            return None
+        try:
+            return pd.to_datetime(raw, utc=True).hour
+        except Exception:
+            try:
+                return pd.to_datetime(raw).hour
+            except Exception:
+                return None
+
+    df["hour"] = df.apply(_get_hour, axis=1)
+    df = df.dropna(subset=["hour"])
+    if df.empty:
+        return None
+
+    hourly = df.groupby(["hour", "strategy"]).size().reset_index(name="count").sort_values("hour")
+    fig = px.bar(hourly, x="hour", y="count", color="strategy",
+                 title="Активность сделок по часам (UTC)", barmode="group")
+    fig.update_layout(height=400, showlegend=True)
+    fig.update_xaxes(tickmode="linear", tick0=0, dtick=1)
+    return fig
+
+
+def create_strategy_status_chart(summary_data: Dict[str, Any]):
+    if not summary_data or "strategies" not in summary_data:
+        return None
+
+    strategies = list(summary_data["strategies"].keys())
+    statuses = []
+    trade_counts = []
+
+    for s in strategies:
+        info = summary_data["strategies"][s]
+        if info.get("status") == "active":
+            statuses.append("Активна")
+            trade_counts.append(info.get("trades_count", 0))
+        elif info.get("status") == "error":
+            statuses.append("Ошибка")
+            trade_counts.append(0)
         else:
-            command = f'trade --config /app/user_data/configs/{config_path.name}'
-        
-        # Получаем порт API из конфигурации
-        api_port = self.get_api_port_from_config(strategy_name, config_path)
-        
-        # Генерируем YAML для сервиса
-        service_yaml = f"""  {service_name}:
-    image: {image}
-    container_name: {container_name}
-    restart: unless-stopped
-    working_dir: /app
-    command: {command}
-    ports:
-      - "{api_port}:{api_port}"  # Прокидываем REST API порт наружу
-    volumes:
-      - ./user_data:/app/user_data:ro
-      - {volumes['models']}:/app/user_data/models
-      - shared_databases_local:/app/user_data/dryrun_db
-      - {volumes['logs']}:/app/user_data/logs"""
-        
-        # Добавляем FreqAI тома если нужно
-        if is_freqai:
-            service_yaml += f"""
-      - {volumes['freqai']}:/app/user_data/freqaimodels
-      - {volumes['data']}:/app/user_data/data"""
-        
-        service_yaml += f"""
-    environment:
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 1G
-        reservations:
-          cpus: "0.2"
-          memory: 512M
-"""
-        
-        return service_yaml
-    
-    def generate_volumes_section(self, strategies: List[Tuple[str, Path]]) -> str:
-        """Генерирует секцию volumes"""
-        volumes = []
-        
-        for strategy_name, _ in strategies:
-            strategy_volumes = self.generate_volume_names(strategy_name)
-            volumes.extend(strategy_volumes.values())
-        
-        # Добавляем общие тома
-        volumes.extend([
-            "aggregated_data_local",
-            "shared_models_local",
-            "shared_databases_local"
-        ])
-        
-        volumes_yaml = "volumes:\n"
-        for volume in sorted(set(volumes)):
-            volumes_yaml += f"  {volume}:\n"
-        
-        return volumes_yaml
-    
-    def create_docker_config(self, strategy_name: str, original_config_path: Path) -> Path:
-        """Создает исправленную конфигурацию для Docker"""
-        # Создаем папку configs если её нет
-        configs_dir = self.base_dir / "user_data" / "configs"
-        configs_dir.mkdir(exist_ok=True)
-        
-        # Читаем оригинальную конфигурацию
-        with open(original_config_path, 'r', encoding='utf-8') as f:
-            config_data = json.load(f)
-        
-        # Исправляем конфигурацию для Docker
-        docker_config = self.fix_config_for_docker(config_data, strategy_name)
-        
-        # Сохраняем исправленную конфигурацию
-        docker_config_path = configs_dir / f"config_{strategy_name}.json"
-        with open(docker_config_path, 'w', encoding='utf-8') as f:
-            json.dump(docker_config, f, indent=2, ensure_ascii=False)
-        
-        print(f"    📝 Создана Docker конфигурация: {docker_config_path.name}")
-        return docker_config_path
-    
-    def fix_config_for_docker(self, config: dict, strategy_name: str) -> dict:
-        """Исправляет конфигурацию для работы в Docker"""
-        # Создаем копию конфигурации
-        docker_config = config.copy()
-        
-        # Убираем проблемные параметры логирования
-        if "logfile" in docker_config:
-            del docker_config["logfile"]
-            print(f"      🔧 Убран параметр logfile")
-        
-        # ВКЛЮЧАЕМ API сервер для каждой стратегии с последовательным портом
-        if "api_server" not in docker_config:
-            docker_config["api_server"] = {}
-        
-        # Генерируем последовательный порт для стратегии (начиная с 8100)
-        self.port_counter += 1
-        api_port = 8100 + self.port_counter - 1
-        
-        docker_config["api_server"]["enabled"] = True  # ВКЛЮЧАЕМ API!
-        docker_config["api_server"]["listen_ip_address"] = "0.0.0.0"
-        docker_config["api_server"]["listen_port"] = api_port
-        docker_config["api_server"]["username"] = "freqtrader"
-        docker_config["api_server"]["password"] = "SuperSecurePassword"
-        docker_config["api_server"]["verbosity"] = "info"
-        
-        # Сохраняем порт для использования в docker-compose
-        docker_config["_api_port"] = api_port
-        
-        print(f"      🔧 ВКЛЮЧЕН API сервер на порту {api_port}")
-        
-        # Исправляем пути к базе данных для Docker
-        if "db_url" in docker_config:
-            # Извлекаем имя стратегии из db_url
-            db_name = strategy_name
-            # Используем правильный путь к существующим базам данных
-            docker_config["db_url"] = f"sqlite:///user_data/dryrun_db/{db_name}.sqlite"
-            print(f"      🔧 Исправлен путь к БД: {docker_config['db_url']}")
-        
-        # Добавляем недостающие параметры для FreqAI стратегий
-        if self.is_freqai_strategy(strategy_name) and "freqai" in docker_config:
-            if "feature_parameters" in docker_config["freqai"]:
-                if "include_timeframes" not in docker_config["freqai"]["feature_parameters"]:
-                    docker_config["freqai"]["feature_parameters"]["include_timeframes"] = ["5m"]
-                if "indicator_periods_candles" not in docker_config["freqai"]["feature_parameters"]:
-                    docker_config["freqai"]["feature_parameters"]["indicator_periods_candles"] = [10, 20]
-                print(f"      🔧 Добавлены недостающие FreqAI параметры")
-        
-        return docker_config
-    
-    def generate_docker_compose(self, output_file: str = "docker-compose-auto.yml") -> None:
-        """Генерирует полный docker-compose файл"""
-        print("🔍 Поиск стратегий и конфигураций...")
-        
-        strategies = self.get_strategy_files()
-        configs = self.get_config_files()
-        
-        if not strategies:
-            print("❌ Стратегии не найдены!")
-            return
-        
-        print(f"\n📊 Найдено стратегий: {len(strategies)}")
-        print(f"📋 Найдено конфигураций: {len(configs)}")
-        
-        # Сначала определяем активные стратегии и создаем исправленные конфигурации
-        print("\n🔧 Определение активных стратегий и создание конфигураций...")
-        active_strategies = []
-        
-        for strategy_name, strategy_path in strategies:
-            config_path = self.find_matching_config(strategy_name, configs)
-            if config_path:
-                print(f"  ✅ {strategy_name} -> {config_path.name}")
-                # Создаем исправленную конфигурацию для Docker
-                docker_config_path = self.create_docker_config(strategy_name, config_path)
-                active_strategies.append((strategy_name, strategy_path, docker_config_path))
-            else:
-                print(f"  ⏭️  {strategy_name} -> конфигурация не найдена, пропускаем")
-        
-        if not active_strategies:
-            print("  ❌ Нет активных стратегий для запуска!")
-            return
-        
-        # Генерируем содержимое файла
-        content = f"""# Автоматически сгенерированный docker-compose файл для FreqTrade
-# Создан скриптом generate_docker_compose.py
-# Время генерации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            statuses.append("Нет данных")
+            trade_counts.append(0)
 
-version: '3.8'
+    from collections import Counter
+    c = Counter(statuses)
 
-services:
-  # Data Aggregator для сбора данных всех стратегий
-  data-aggregator:
-    image: python:3.11-slim
-    container_name: data-aggregator-local
-    restart: unless-stopped
-    working_dir: /app
-    command: >
-      bash -c "
-        apt-get update && apt-get install -y curl &&
-        pip install pandas numpy &&
-        python scripts/data_aggregator.py
-      "
-    volumes:
-      - .:/app:ro
-      - shared_models_local:/app/user_data/models:ro
-      - aggregated_data_local:/tmp/aggregated_data:rw"""
-        
-        # Добавляем монтирование каждой базы данных в отдельную папку
-        # Убираем индивидуальные тома, так как они перезаписывают друг друга
-        # for strategy_name, strategy_path, config_path in active_strategies:
-        #     volume_name = self.generate_volume_names(strategy_name)['db']
-        #     content += f"\n      - {volume_name}:/app/user_data/dryrun_db:ro"
-        
-        # Добавляем общую папку для баз данных
-        content += f"\n      - shared_databases_local:/app/user_data/dryrun_db:ro"
-        
-        content += """
-    environment:
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-    deploy:
-      resources:
-        limits:
-          cpus: "0.3"
-          memory: 512M
-        reservations:
-          cpus: "0.1"
-          memory: 256M
+    fig = make_subplots(rows=1, cols=2,
+                        subplot_titles=("Статус стратегий", "Количество сделок"),
+                        specs=[[{"type": "pie"}, {"type": "bar"}]])
+    fig.add_trace(go.Pie(labels=list(c.keys()), values=list(c.values()), name="Статус"), row=1, col=1)
+    fig.add_trace(go.Bar(x=strategies, y=trade_counts, name="Сделки"), row=1, col=2)
+    fig.update_layout(height=400, showlegend=False)
+    return fig
 
-  # Streamlit дашборд
-  streamlit:
-    image: python:3.11-slim
-    container_name: freqtrade-dashboard-local
-    restart: unless-stopped
-    working_dir: /app
-    command: >
-      bash -c "
-        apt-get update && apt-get install -y curl &&
-        pip install streamlit pandas plotly numpy &&
-        streamlit run scripts/strategy_dashboard_restored.py --server.port 8501 --server.address 0.0.0.0
-      "
-    volumes:
-      - .:/app:ro
-      - aggregated_data_local:/tmp/aggregated_data:ro
-    ports:
-      - "8501:8501"
-    environment:
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 1G
-        reservations:
-          cpus: "0.2"
-          memory: 512M
-    depends_on:
-      - data-aggregator
 
-"""
-        
-        # Добавляем сервисы для активных стратегий
-        print("\n🔧 Генерация сервисов...")
-        
-        for strategy_name, strategy_path, docker_config_path in active_strategies:
-            is_freqai = self.is_freqai_strategy(strategy_name)
-            
-            print(f"  🔧 Создание сервиса для {strategy_name}")
-            service_yaml = self.generate_freqtrade_service(strategy_name, docker_config_path, is_freqai)
-            content += service_yaml + "\n"
-        
-        # Добавляем секцию volumes только для активных стратегий
-        content += "\n" + self.generate_volumes_section([(name, path) for name, path, _ in active_strategies])
-        
-        # Записываем файл
-        output_path = Path(output_file)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        print(f"\n✅ Docker-compose файл создан: {output_path}")
-        print(f"📊 Всего сервисов: {len(active_strategies) + 2} (активные стратегии + data-aggregator + streamlit)")
-        print(f"📈 Активных стратегий: {len(active_strategies)}")
-        print(f"⏭️  Пропущено стратегий: {len(strategies) - len(active_strategies)}")
-        
-        # Создаем также скрипт для запуска
-        self.generate_launch_script(output_file)
-    
-    def generate_launch_script(self, compose_file: str) -> None:
-        """Создает скрипт для запуска системы"""
-        script_content = f"""#!/bin/bash
-# Скрипт для запуска автоматически сгенерированной системы FreqTrade
+def create_detailed_strategy_status(summary_data: Dict[str, Any], all_strategies_data: Dict[str, Any]):
+    if not summary_data or "strategies" not in summary_data:
+        return None
 
-COMPOSE_FILE="{compose_file}"
+    strategies = summary_data["strategies"]
+    active, error = [], []
 
-echo "🚀 Запуск системы FreqTrade..."
-echo "📁 Используется файл: $COMPOSE_FILE"
+    for name, info in strategies.items():
+        status = info.get("status", "no_data")
+        full = all_strategies_data.get("strategies", {}).get(name, {})
+        if status == "active":
+            active.append({
+                "name": name,
+                "trades_count": info.get("trades_count", 0),
+                "total_profit": float(full.get("total_profit", 0.0) or 0.0),
+                "last_update": info.get("last_update", "")
+            })
+        elif status == "error":
+            error.append({"name": name,
+                          "error": info.get("error", "Неизвестная ошибка"),
+                          "last_update": info.get("last_update", "")})
+        else:
+            # no_data → в блок ошибок с мягким текстом
+            error.append({"name": name,
+                          "error": "Нет данных (БД не создана или пустая).",
+                          "last_update": info.get("last_update", "")})
+    return {"active": active, "error": error}
 
-# Проверяем существование файла
-if [ ! -f "$COMPOSE_FILE" ]; then
-    echo "❌ Файл $COMPOSE_FILE не найден!"
-    echo "Запустите сначала: python scripts/generate_docker_compose.py"
-    exit 1
-fi
 
-# Останавливаем существующие сервисы
-echo "🛑 Остановка существующих сервисов..."
-docker-compose -f "$COMPOSE_FILE" down
-
-# Запускаем новые сервисы
-echo "▶️  Запуск сервисов..."
-docker-compose -f "$COMPOSE_FILE" up -d
-
-# Показываем статус
-echo "📊 Статус сервисов:"
-docker-compose -f "$COMPOSE_FILE" ps
-
-echo ""
-echo "🌐 Streamlit дашборд доступен по адресу: http://localhost:8501"
-echo "📝 Логи data-aggregator: docker-compose -f $COMPOSE_FILE logs data-aggregator"
-echo "🔄 Перезапуск: docker-compose -f $COMPOSE_FILE restart"
-echo "⏹️  Остановка: docker-compose -f $COMPOSE_FILE down"
-"""
-        
-        script_path = Path("deploy/launch-auto.sh")
-        script_path.parent.mkdir(exist_ok=True)
-        
-        with open(script_path, 'w', encoding='utf-8') as f:
-            f.write(script_content)
-        
-        # Делаем скрипт исполняемым
-        os.chmod(script_path, 0o755)
-        
-        print(f"📜 Скрипт запуска создан: {script_path}")
+# ---------- Main ----------
 
 def main():
-    parser = argparse.ArgumentParser(description="Генератор docker-compose для FreqTrade")
-    parser.add_argument("--output", "-o", default="docker-compose-auto.yml", 
-                       help="Имя выходного файла (по умолчанию: docker-compose-auto.yml)")
-    parser.add_argument("--base-dir", "-b", default=".", 
-                       help="Базовая директория проекта (по умолчанию: текущая)")
-    parser.add_argument("--create-configs", "-c", action="store_true",
-                       help="Создать недостающие конфигурации")
-    
-    args = parser.parse_args()
-    
-    print("🚀 Генератор docker-compose для FreqTrade")
-    print("=" * 50)
-    
-    generator = DockerComposeGenerator(args.base_dir)
-    
-    if args.create_configs:
-        strategies = generator.get_strategy_files()
-        configs = generator.get_config_files()
-        generator.create_missing_configs(strategies, configs)
-    
-    generator.generate_docker_compose(args.output)
-    
-    print("\n🎉 Готово! Теперь можно запустить:")
-    print(f"   docker-compose -f {args.output} up -d")
-    print(f"   или использовать скрипт: ./deploy/launch-auto.sh")
+    data = load_aggregated_data()
+    if data is None:
+        st.error("Не удалось загрузить данные. Проверьте работу data_aggregator.py")
+        return
 
-if __name__ == "__main__":
-    from datetime import datetime
-    main()
+    # Sidebar: общая сводка + фильтр по датам
+    with st.sidebar:
+        st.header("ℹ️ Информация")
+        if 'last_update' in data:
+            st.metric("Последнее обновление", format_timestamp(data['last_update']))
+        if 'summary' in data:
+            summary = data['summary']
+            st.metric("Всего стратегий", summary.get('strategies_count', 0))
+            st.metric("Активных стратегий", summary.get('active_strategies', 0))
+            st.metric("Всего сделок", summary.get('total_trades', 0))
+            st.metric("Общая прибыль", f"{summary.get('total_profit', 0):.4f}")
+
+        st.markdown("---")
+        st.header("📆 Фильтр по дате")
+
+        all_trades = data.get("recent_trades") or []
+        min_d, max_d = _get_trades_date_min_max(all_trades)
+        today = date.today()
+        if min_d is None or max_d is None:
+            min_d, max_d = today - timedelta(days=30), today
+
+        filter_mode = st.radio("Режим выбора диапазона", ["Последние N дней (≤ 100)", "Произвольные даты"], index=0)
+
+        if filter_mode == "Последние N дней (≤ 100)":
+            days = st.slider("Сколько дней назад включительно", 1, 100, 100, 1)
+            period_end = datetime.combine(max_d, datetime.max.time())
+            period_start = period_end - timedelta(days=days - 1)
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                d_from = st.date_input("С какого числа", value=max(min_d, max_d - timedelta(days=100)),
+                                       min_value=min_d, max_value=max_d)
+            with c2:
+                d_to = st.date_input("По какое число", value=max_d, min_value=min_d, max_value=max_d)
+            if d_from > d_to:
+                st.warning("Дата 'с' больше даты 'по'. Диапазон свёрнут до одного дня.")
+                d_to = d_from
+            period_start = datetime.combine(d_from, datetime.min.time())
+            period_end = datetime.combine(d_to, datetime.max.time())
+
+        if st.button("🔍 Применить фильтр"):
+            st.session_state["_period_start"] = period_start
+            st.session_state["_period_end"] = period_end
+
+        period_start = st.session_state.get("_period_start", period_start)
+        period_end = st.session_state.get("_period_end", period_end)
+        st.caption(f"Выбранный период: **{period_start:%Y-%m-%d} — {period_end:%Y-%m-%d}**")
+
+        if st.button("🔄 Обновить данные"):
+            st.cache_data.clear()
+            st.rerun()
+
+    # Основные метрики за период
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.header("📈 Общая статистика (за период)")
+    with col2:
+        st.header("⏰ Время работы")
+        if 'last_update' in data:
+            st.metric("Обновлено", format_timestamp(data['last_update']))
+
+    all_rec_trades = data.get("recent_trades") or []
+    filtered_trades = filter_trades_by_period(all_rec_trades, period_start, period_end)
+
+    total_trades_period = len(filtered_trades)
+    profits = []
+    for t in filtered_trades:
+        try:
+            profits.append(float(t.get("realized_profit") or 0.0))
+        except Exception:
+            profits.append(0.0)
+    total_profit_period = float(np.nansum(profits)) if profits else 0.0
+    avg_profit = (total_profit_period / total_trades_period) if total_trades_period else 0.0
+    strategies_in_period = sorted(list({t.get("strategy", "Unknown") for t in filtered_trades}))
+
+    c = st.columns(4)
+    c[0].metric("Сделки (период)", total_trades_period)
+    c[1].metric("Прибыль (период)", f"{total_profit_period:.4f}")
+    c[2].metric("Стратегии (в периоде)", len(strategies_in_period))
+    c[3].metric("Средняя прибыль/сделку", f"{avg_profit:.6f}")
+
+    st.markdown("---")
+
+    # Статус стратегий (из summary с реальными статусами)
+    if "summary" in data:
+        st.subheader("📊 Статус стратегий")
+        detailed_status = create_detailed_strategy_status(data["summary"], data)
+        if detailed_status:
+            s1, s2 = st.columns(2)
+            with s1:
+                st.subheader("✅ Активные стратегии")
+                if detailed_status["active"]:
+                    for s in detailed_status["active"]:
+                        with st.container():
+                            c1, c2, c3 = st.columns([2, 1, 1])
+                            c1.write(f"**{s['name']}**")
+                            c2.metric("Сделки", s["trades_count"])
+                            c3.metric("Прибыль", f"{s['total_profit']:.4f}")
+                        container_name, api_port = get_container_info(s["name"])
+                        with st.expander(f"🔗 Ссылки для {s['name']}"):
+                            st.markdown(f"**Логи контейнера:**\n```bash\ndocker logs {container_name}\n```")
+                            if api_port:
+                                st.markdown("**REST API:**\n```bash\n"
+                                            f"curl -u freqtrader:SuperSecurePassword "
+                                            f"http://localhost:{api_port}/api/v1/status\n```")
+                            else:
+                                st.info("Порт API неизвестен (добавьте в /app/user_data/containers.json).")
+                else:
+                    st.info("Нет активных стратегий.")
+            with s2:
+                st.subheader("ℹ️ Стратегии без данных / с ошибками")
+                if detailed_status["error"]:
+                    for s in detailed_status["error"]:
+                        with st.container():
+                            st.warning(f"**{s['name']}**")
+                            st.write(f"{s.get('error', 'Нет данных')}")
+                            container_name, api_port = get_container_info(s["name"])
+                            st.markdown(f"**Логи контейнера:**\n```bash\ndocker logs {container_name}\n```")
+                            if api_port:
+                                st.markdown("**REST API:**\n```bash\n"
+                                            f"curl -u freqtrader:SuperSecurePassword "
+                                            f"http://localhost:{api_port}/api/v1/status\n```")
+                else:
+                    st.success("Ошибок и пустых стратегий не обнаружено.")
+        chart = create_strategy_status_chart(data["summary"])
+        if chart:
+            st.plotly_chart(chart, use_container_width=True)
+
+    # Прибыль (за период)
+    st.subheader("💰 Анализ прибыли (за период)")
+    profit_data_period = recompute_profit_by_strategy(filtered_trades)
+    profit_chart = create_profit_chart(profit_data_period)
+    if profit_chart:
+        st.plotly_chart(profit_chart, use_container_width=True)
+
+    if profit_data_period.get("by_strategy"):
+        st.dataframe(pd.DataFrame(profit_data_period["by_strategy"]).T, use_container_width=True)
+
+    # Временная шкала и активность (за период)
+    st.subheader("📅 Временная шкала сделок (период)")
+    timeline = create_enhanced_trades_timeline(filtered_trades)
+    if timeline:
+        st.subheader("📊 Детальная временная шкала по стратегиям")
+        st.plotly_chart(timeline, use_container_width=True)
+    else:
+        st.warning("Нет данных для временной шкалы.")
+
+    hourly = create_hourly_activity_chart(filtered_trades)
+    if hourly:
+        st.subheader("🕐 Активность сделок по часам (период)")
+        st.plotly_chart(hourly, use_container_width=True)
+    else:
+        st.warning("Нет данных для графика активности по часам.")

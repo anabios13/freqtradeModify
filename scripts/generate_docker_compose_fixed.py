@@ -180,7 +180,7 @@ class DockerComposeGenerator:
     ports:
       - "{api_port}:{api_port}"  # Прокидываем REST API порт наружу
     volumes:
-      - ./user_data:/app/user_data:ro
+      - ./user_data:/app/user_data:rw
       - {volumes['models']}:/app/user_data/models
       - shared_databases:/app/user_data/dryrun_db
       - {volumes['logs']}:/app/user_data/logs"""
